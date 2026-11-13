@@ -1,0 +1,22 @@
+# TSW-760 side buttons (top -> bottom)
+#
+# they are touch-key zones of the ft5x06 touch controller (x=1060..1130, outside the 1024px screen).
+# the kernel emits the linux scancodes below (device tree tpkey_1..5), crestron removed them from the key layouts so android just dropped them.
+#
+# the touchscreen reports vendor 0001 / product 0001, same IDs as the IR remote, the GPIO power key and the PMU because of course it does,
+# so android uses /system/usr/keylayout/Vendor_0001_Product_0001.kl for all of them. Thats why tools/mod-data.py installs
+#   /data/system/devices/idc/Vendor_0001_Product_0001.idc  (= ft5x06.idc + keyboard.layout)
+#   /data/system/devices/keylayout/crusty_tsw.kl           (= that system .kl + the lines below)
+# lines here replace any mapping of the same scancode in the system file.
+#
+# right column: android KEYCODE_* name without the prefix. Lollipop has no WAKE flag, dont even try, an unknown flag kills the whole file.
+#
+# DONT map anything to POWER/SLEEP! androids screen-off runs the kernel early-suspend which holds the touch controller (and with it these buttons) in reset, so the panel cant be woken up again.
+# the power button sends BUTTON_1 and crustys accessibility service blanks the screen instead (short press) or opens the crusty app (long press).
+# all five send neutral gamepad codes, only the crusty companion gives them a meaning (Settings > Side buttons in the crusty app, incl. per-app profiles).
+
+key 158   BUTTON_1      # Power  (fixed: short = screen off/on, long = crusty app)
+key 102   BUTTON_2      # Home   (configurable in crusty)
+key 113   BUTTON_3      # Lamp   (configurable in crusty)
+key 115   BUTTON_4      # Up     (configurable in crusty)
+key 114   BUTTON_5      # Down   (configurable in crusty)

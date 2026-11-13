@@ -1,0 +1,6 @@
+# packages that have to stay enabled or you lock yourself out of your own panel
+# tools/mod-data.py turns them back on if they got disabled (e.g. from crustys "Crestron apps" page), and crusty doesnt even show a switch for them.
+dev.crusty.companion
+com.android.systemui
+com.android.settings
+com.android.launcher

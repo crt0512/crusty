@@ -1,0 +1,8 @@
+work/
+out/
+# your own TSW dump do not commit it!
+img/
+*.img
+__pycache__/
+# your own ssh public keys for the panel
+config/ssh/

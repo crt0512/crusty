@@ -1,0 +1,13 @@
+#!/system/bin/sh
+# golden mode only: this is /system/bin/app_process on the SD cards p2, the real binary is app_process32 and gets exec'd at the end.
+# golden mode and the normal system are two different android builds sharing one /data, so each threw away the others compiled code (/data/dalvik-cache) and every boot after a switch spent ~90 s recompiling, no bueno.
+# so golden mode gets its own cache, bind mounted over the shared path once before zygote starts (the /dev marker makes later calls skip it).
+# if the bind fails nothing changes, shared cache and slow like before.
+if [ ! -e /dev/.crusty_golden_cache ]; then
+    C=/data/dalvik-cache-golden
+    mkdir -p $C/arm $C/profiles
+    chown 0:0 $C $C/arm;          chmod 0771 $C; chmod 0711 $C/arm
+    chown 1000:1000 $C/profiles;  chmod 0711 $C/profiles
+    /system/bin/busybox mount -o bind $C /data/dalvik-cache && : > /dev/.crusty_golden_cache
+fi
+exec /system/bin/app_process32 "$@"

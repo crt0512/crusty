@@ -1,0 +1,24 @@
+#!/bin/sh
+# mock of the panels busybox for tests/golden/run.sh and install.sh, they call it as $BB <applet> ..., nobody runs it by hand.
+# behaves like the real one where it matters: its stat has -f/-t but NO -c ("invalid option -- c"), which once silently broke the backup (fun day).
+cmd=$1; shift
+case "$cmd" in
+  blockdev) stat -c %s "$2" ;;
+  stat)
+    for a in "$@"; do [ "$a" = -c ] && { echo "/system/bin/busybox: invalid option -- c" >&2; exit 1; }; done
+    if [ "$1" = -f ] && [ "$2" = -t ]; then
+      [ -n "$BROKEN_STATF" ] && { echo "stat: can't read file system information" >&2; exit 1; }
+      # exactly the panel busybox's layout (10 fields, no format support) with the values of a 7.5 GB FAT32 stick: name fsid namelen type bsize blocks bfree bavail files ffree
+      echo "$3 0 1530 4d44 32768 245000 244000 244000 0 0"; exit 0
+    fi
+    stat "$@" ;;
+  mount|umount) exit 0 ;;
+  split)   # busybox split default suffix length 2 (aa, ab, ...); CORRUPT=1 simulates a bad stick
+    split -a 2 "$@"; rc=$?
+    if [ -n "$CORRUPT" ]; then
+        for last; do :; done      # last arg = output prefix
+        printf 'X' | dd of="${last}ab" bs=1 seek=100 conv=notrunc status=none
+    fi
+    exit $rc ;;
+  *) "$cmd" "$@" ;;
+esac

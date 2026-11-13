@@ -1,0 +1,9 @@
+#!/bin/sh
+# mock of the panels toolbox dd (NetBSD dd built without conv) for tests/golden/install.sh.
+# refuses conv= and, like toolbox dd, doesnt truncate the output when seek= is given (GNU dd wants conv=notrunc for that on files).
+seek=0
+for a; do
+    case "$a" in conv=*) echo "dd: conv option disabled" >&2; exit 1 ;; seek=*) seek=1 ;; esac
+done
+[ $seek = 1 ] && exec dd "$@" conv=notrunc status=none
+exec dd "$@" status=none

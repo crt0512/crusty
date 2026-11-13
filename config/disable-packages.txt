@@ -1,0 +1,19 @@
+# android packages that get disabled on the panel, one per line, # = comment
+# tools/mod-data.py writes them into /data/system/users/0/package-restrictions.xml, same thing `pm disable <pkg>` does.
+# want one back? delete the line and re-run.
+#
+# started as only the UI side crestron apps, the background ones were left alone because we thought the daemons on the eMMC need them (they dont lol)
+# btw android 5 restarts the persistent ones (com.crestron.txrxservice, com.crestron.speechtotextservice, com.crestron.service) even when disabled,
+# so those and com.crestron.platform get ripped out of the system image instead, see docs/ANALYSIS.md
+
+com.crestron.home            # crestrons home screen (the only HOME app, with it gone Launcher2 takes over)
+air.air.Core3Launcher        # crestron project/UI runtime (Adobe AIR, ewww)
+com.crestron.screensaver     # crestrons screensaver
+com.crestron.splash          # boot splash overlay service (+ Zoom ultrasonic, whatever that is doing in there)
+com.crestron.remoteui        # remote UI service
+com.crestron.webview         # the "general web" app mode
+us.zoom.zrc.lightbar         # Zoom Rooms lightbar backend
+com.crestron.speechtotextservice   # crestron voice control (2 persistent processes just sitting there)
+com.crestron.service               # sets the keyboard language from control-system joins
+com.crestron.bluetoothleservice    # crestron BLE presence/beacons
+org.pjsip.pjsua                    # SIP client for the crestron intercom

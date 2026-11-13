@@ -1,0 +1,4 @@
+# single components to disable (package/class), goes into package-restrictions.xml too
+# android throws away entries for packages it doesnt know yet (so before their first boot), no bueno on a fresh install.
+# for anything that has to work from boot one, patch the APK instead (tools/build-apps.sh). Example:
+#   com.android.settings/com.android.settings.CryptKeeper
