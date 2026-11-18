@@ -84,30 +84,6 @@ Getting the original card back is one command:
 tools/flash.sh img/sdcard.img /dev/sdX
 ```
 
-**THIS WRITES TO BLOCK DEVICES.** `tools/flash.sh` checks that the target is removable, not mounted and the right size and asks before it writes, it will still happily eat whatever card you point it at. `/dev/sdX` is YOUR job to get right.
-
-**AT YOUR OWN RISK.** This is a hobby project for panels that are EOL anyway. The eMMC install verifies the images on the stick, checks the partition is in a state it knows and reads everything back after writing, and it only touches `system` and `logo` (never u-boot). It worked on my panel, that is all the warranty you get. If yours turns into a brick thats sad but (not my problem).
-
-**ITS NOT SECURE AND ISNT TRYING TO BE.** The firmware is signed with the public AOSP test keys (crestron did that, not me), there is a root shell on port 22 (key only at least) and a su that any app can ask for. Fine on your home notwork, no bueno anywhere you dont trust. KEEP THIS IN MIND!
-
-## How it actually works
-- The panel normally boots `/system` from the internal eMMC but takes `/data` from the SD card. So the first round never touches the eMMC: `tools/mod-data.py` puts our apps, the disabled package list, the key layout and the settings straight into the cards /data image.
-  - Note : the platform key is the public AOSP test key, thats the only reason our Settings and SystemUI get accepted as system apps.
-- The card also holds crestrons "golden" fallback system (the thing the reset button gets you into). `tools/mod-golden.py` swaps its init script for ours so golden mode becomes a root maintenance mode with touch buttons, normal boots dont notice.
-  - Note : crestrons own golden mode reformats your data and reflashes the eMMC including u-boot. Ours doesnt, those scripts are stubbed.
-- `tools/ubootenv.py golden` flips the u-boot env on the card so the next boot lands there. Later you get there from the app: crusty -> System -> "Reboot to golden mode".
-- The golden screen has the common actions on top (back up, update (tick "Flash RAW (slow)" to rewrite everything instead of only the changed chunks, also for restore), save logs, reboot, shut down with a "Stay in golden mode" tick so the next boot is golden again) and a "More" list: brightness slider (golden mode is dim by default), restore, network info / start network, ssh server (keys are the ones from `/data/crusty/ssh`, import more from the stick), verbose boot (serial console, or the kernel log on screen from when Android starts: the kernel has no on-screen console), update recovery from the stick (so the card never has to leave the panel again: `setup.sh update` puts `crusty-recovery-update/` on the stick), system info, u-boot env, clear apps' data, reset crusty settings + PIN.
-- In golden mode "Back up eMMC to USB stick" copies the whole eMMC to the stick and verifies it end to end with md5 (about 9 minutes copy, 2 minutes verify).
-- On the PC `tools/build-emmc.py` builds a new `system` and `logo` from that backup: Chromium 95, su, Dropbear, the Home key fix, boot animation, boot logo, and most crestron daemons switched off.
-- Back in golden mode the install compares the eMMC in 4 MiB chunks and writes only the ones that differ, then reads it all back.
-  - Note : the first boot after an eMMC update takes about 135 s instead of 35 s because Android recompiles everything. Its not hung, leave it alone.
-- From then on its `./setup.sh update` whenever you change something.
-
-## Anythings else
-- NEVER map a side button to POWER or SLEEP and dont let Android turn the screen off by itself. Its screen-off puts the touch controller in reset and the side buttons are part of that touch controller, so nothing can wake the panel anymore. crusty does its own "screen off" (backlight to 0 + a black overlay) for exactly that reason.
-- the panel runs on PoE only. On the switch i've tested there was no LLDP power negotiation going on at all, its hardware classification only, so nothing had to be replaced there.
-- SSL errors in the browser are usually the clock, crusty syncs it over NTP by itself now (Settings: Date & time).
-
 ## Known meh
 Honest list of what is half baked or not there at all:
 
