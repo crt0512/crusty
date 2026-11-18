@@ -25,7 +25,9 @@ final class Tweaks {
         boolean kioskHide = Kiosk.active(c) && Prefs.bool(c, Prefs.KIOSK_HIDE_BARS, true);
         ContentResolver cr = c.getContentResolver();
 
-        boolean hideStatus = kioskHide || Prefs.bool(c, Prefs.HIDE_STATUSBAR, false);
+        // golden mode has no bars at all, the next normal boot puts them back (applyAll runs at every service start)
+        boolean golden = Golden.active();
+        boolean hideStatus = kioskHide || golden || Prefs.bool(c, Prefs.HIDE_STATUSBAR, false);
         String policy = hideStatus ? "immersive.status=*:immersive.preconfirms=*" : null;
         String cur = Settings.Global.getString(cr, "policy_control");
         if (!eq(cur, policy)) {
@@ -33,7 +35,7 @@ final class Tweaks {
             CrustyService.event("tweak: policy_control " + cur + " -> " + policy);
         }
 
-        int nav = (Prefs.bool(c, Prefs.NAVBAR, true) && !kioskHide) ? 1 : 0;
+        int nav = (Prefs.bool(c, Prefs.NAVBAR, true) && !kioskHide && !golden) ? 1 : 0;
         int curNav = Settings.Global.getInt(cr, SETTING_NAVBAR, 1);
         if (curNav != nav) {
             Settings.Global.putInt(cr, SETTING_NAVBAR, nav);

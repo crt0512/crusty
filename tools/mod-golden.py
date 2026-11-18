@@ -10,6 +10,7 @@ so they get replaced:
   /system/bin/cleanUpCache.sh         -> app/golden/disabled.sh  (formats SD partitions)
   /system/bin/crestronLocalUpgrade.sh -> app/golden/disabled.sh  (reflashes the eMMC)
   /system/bin/crestronUpgrade.sh      -> app/golden/disabled.sh
+  /system/xbin/dropbearmulti          -> work/dropbear/dropbearmulti (ssh in golden mode, only if tools/build-dropbear.sh ran) + /system/etc/shells
 
 the originals stay around as <name>.crestron (saved once).
 files get root:shell 0755 and the SELinux label u:object_r:system_file:s0 like the rest of /system.
@@ -58,9 +59,11 @@ def main():
     open(label, "wb").write(LABEL)
     cmds = []
 
-    def put(local, path):
-        cmds.extend([f"rm {path}", f"write {local} {path}", f"sif {path} uid 0", f"sif {path} gid 2000",
-                     f"sif {path} mode 0100755", f"ea_set -f {label} {path} security.selinux"])
+    def put(local, path, mode="0100755"):
+        if exists(img, path):
+            cmds.append(f"rm {path}")
+        cmds.extend([f"write {local} {path}", f"sif {path} uid 0", f"sif {path} gid 2000",
+                     f"sif {path} mode {mode}", f"ea_set -f {label} {path} security.selinux"])
 
     for name, src in REPLACE.items():
         path = f"/bin/{name}"
@@ -81,6 +84,17 @@ def main():
     # golden mode gets its own compile cache, a wrapper sits where the app_process -> app_process32 link was
     print(">> /bin/app_process <- app/golden/app_process (own dalvik-cache for golden mode)")
     put(os.path.abspath(os.path.join(GOLDEN, "app_process")), "/bin/app_process")
+
+    # Dropbear for ssh in golden mode (the script falls back to the eMMCs copy if this isnt here)
+    db = os.path.abspath(os.path.join(HERE, "..", "work", "dropbear", "dropbearmulti"))
+    if os.path.exists(db):
+        print(">> /xbin/dropbearmulti <- work/dropbear/dropbearmulti (+ /etc/shells, dropbear wants a listed login shell)")
+        shells = os.path.join(tmp, "shells")
+        open(shells, "w").write("/system/bin/sh\n/system/bin/bash\n/system/bin/telnetSSHProxy\n")
+        put(db, "/xbin/dropbearmulti")
+        put(shells, "/etc/shells", "0100644")
+    else:
+        print(">> no work/dropbear/dropbearmulti (run tools/build-dropbear.sh), golden ssh will use the eMMCs copy")
 
     if a.dry_run:
         print("\n".join("   debugfs: " + c for c in cmds))

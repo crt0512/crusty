@@ -123,6 +123,11 @@ public class CrustyService extends Service implements android.content.SharedPref
             Golden.showBanner(this);
         }
 
+        // "verbose boot on screen" (golden mode -> More), only for a normal boot, golden mode has its own log panel
+        if (!Golden.active() && SystemClock.elapsedRealtime() < 5 * 60 * 1000 && BootConsole.wanted()) {
+            BootConsole.show(this);
+        }
+
         // autostart / kiosk app after boot, only when the process starts during boot though, a service restart hours later shouldnt yoink you out of whatever you were doing
         if (SystemClock.elapsedRealtime() < 10 * 60 * 1000 && !Golden.active()) {
             main.postDelayed(new Runnable() {

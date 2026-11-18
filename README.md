@@ -30,7 +30,7 @@ All the findings, partition layouts and the weird stuff I ran into are in [docs/
 Before you start ripping panels out of walls please read [The scary bits](#the-scary-bits)!
 
 ## Getting started
-You need a TSW-760 (or TSW-560 but untested), a microSD card reader, a FAT32 USB stick with 8 GB or more and a Linux PC.
+You need a TSW-760 (Technically TSW-560 and TSW-1060 should also work but untested), a microSD card reader, a FAT32 USB stick with 8 GB or more and a Linux PC.
 
 ```bash
 ./setup.sh
@@ -51,121 +51,32 @@ Changed something (a config, a patch, the app)? This rebuilds and writes only wh
 ./setup.sh update
 ```
 
+It asks how the update gets to the panel: via the USB stick (golden mode installs it itself, More -> "Update recovery from USB stick", the card stays in the panel) or via the SD card (card into the PC, /data is read, only changed chunks get written). The USB way needs a golden mode that already has that button, so the very first time use the card.
+
 > Note : the settings that get baked in live in [config/](config/). Your ssh public key goes in `config/ssh/authorized_keys` (git-ignored), without it there is no ssh at all.
 
 ## Doing it by hand
-What `setup.sh` runs, roughly in order. `/dev/sdX` is your card reader and `/media/$USER/STICK` is wherever your stick got mounted, you have to fill those in yourself.
+If you dont trust a script with your SD card (fair), every step `setup.sh` runs is written out with the real commands in [docs/BY-HAND.md](docs/BY-HAND.md). That file also has the PC side tests for the golden mode script.
 
-Unpack your card dump into `work/`:
-
-```bash
-tools/extract.sh img/sdcard.img
-```
-
-Build Settings, Launcher2, SystemUI and crusty into `work/apps/`:
+## More panels
+Got a pile of these? After `./setup.sh` finished on the first one every other panel is just this, no card dump and no rebuilding everything:
 
 ```bash
-tools/build-apps.sh
+./install.sh
 ```
 
-Put the apps, the disabled packages, the keymap and the settings into the cards /data:
+Plug in the stock microSD card of the next panel and follow it. It checks that the card is the same model and firmware as panel 1 (otherwise it says no, that one needs its own `./setup.sh`), patches only that panels own p2, p3 and p6 and writes the changed chunks, about 140 MiB. Then it preps the USB stick, the same stick works for all panels (aslong as its got enough storage, expect around 4.5ish GB per panel if you do eMMC backups)
 
-```bash
-tools/mod-data.py
-```
+On the panel it is golden mode again, optionally "Back up eMMC to USB stick" (the folder is named after the panels ethernet MAC which is the only thing FW wise that exists as a label on the back of mine), then "Update eMMC from USB stick".
 
-Turn golden mode into the crusty maintenance mode:
-
-```bash
-tools/mod-golden.py
-```
-
-Tell u-boot to boot into it next time:
-
-```bash
-tools/ubootenv.py golden
-```
-
-Pack it all up, gives you `out/sdcard-mod.img`:
-
-```bash
-tools/pack.sh
-```
-
-And write it to the card, CHECK THE DEVICE NAME TWICE:
-
-```bash
-tools/flash.sh --incremental out/sdcard-mod.img /dev/sdX
-```
-
-Now the card goes back into the panel together with the stick, it boots into golden mode (a banner with big buttons) and you tap "Back up eMMC to USB stick". Wait for "backup DONE + verified", then "Save logs & shut down".
-
-Back on the PC copy everything from the `crusty-emmc-backup-*` folder on the stick into `work/emmc-backup/`, then verify and unpack it:
-
-```bash
-tools/extract-emmc.py work/emmc-backup work/emmc
-```
-
-Build su:
-
-```bash
-tools/build-su.sh
-```
-
-Build Dropbear (skip it and you just dont get ssh):
-
-```bash
-tools/build-dropbear.sh
-```
-
-Get Chromium:
-
-```bash
-tools/fetch-chromium.sh
-```
-
-Build the eMMC update, gives you `out/crusty-emmc-update/` and `out/crusty-emmc-restore/`:
-
-```bash
-tools/build-emmc.py
-```
-
-Yeet both onto the stick (only writes the chunks that differ and reads everything back after):
-
-```bash
-tools/sync-stick.py /media/$USER/STICK out/crusty-emmc-update out/crusty-emmc-restore
-```
-
-Stick into the panel, golden mode again, tap "Install crusty eMMC update from USB", wait for "install DONE + verified" and then "Reboot to the normal system".
-
-> Note : `setup.sh` also rebuilds and rewrites the card at this point (read-data, the card steps from above again, flash), because the card holds the panels /data and stays in there for good.
-
-<br>
-
-Some extras:
-
-- this pulls /data off a card thats been in use so a rebuild keeps what you set up on the panel:
-
-```bash
-tools/read-data.sh /dev/sdX
-```
-
-- this runs the maintenance mode script on the PC against fake partitions, for when you touched `app/golden/` and would like to not find out on the real eMMC:
-
-```bash
-tests/golden/run.sh
-```
-
-- same thing but for the install/restore part:
-
-```bash
-tests/golden/install.sh
-```
+- everything panel specific lands in `work/panels/<MAC>/`, including the stock p3 and p6 of that card.
+- `./install.sh --dry-run` builds but writes nothing.
+- what is shared and what is per panel is in [docs/ANALYSIS.md](docs/ANALYSIS.md), "More panels".
 
 ## The scary bits
 **YOU NEED YOUR OWN DUMP.** Nothing from the panel is in this repo and it will stay that way, crestrons firmware is theirs (and they get real angry if you distribute it, ask me how I know). Your own dumps go to `img/` and `work/` (both git ignored), everything else gets downloaded from public sources and checksum checked. So no, there is no ready made image to download, dont ask.
 
-**BACK UP FIRST, BOTH OF THEM.** The panel has two storage devices, the SD card and an internal eMMC. The card is easy, you can always re-image it from your dump so keep `img/sdcard.img` somewhere safe. The eMMC is internal, you cant just pull it out and reimage it, so if that one is toast you need a working way back and thats what the eMMC backup in golden mode is for. `setup.sh` makes you do each backup before the thing in question gets written. DO NOT SKIP IT, and keep `out/crusty-emmc-restore/` on the stick, "Restore original eMMC from USB" in golden mode is your way back.
+**BACK UP FIRST, BOTH SD AND EMMC.** The panel has two storage devices, the SD card and an internal eMMC. The card is easy, you can always re-image it from your dump so keep `img/sdcard.img` somewhere safe. The eMMC is internal, you cant just pull it out and reimage it, so if that one is toast you need a working way back and thats what the eMMC backup in golden mode is for. `setup.sh` makes you do each backup before the thing in question gets written. DO NOT SKIP IT, and keep `out/crusty-emmc-restore/` on the stick, "Restore original eMMC from USB" in golden mode is your way back.
 
 Getting the original card back is one command:
 
@@ -185,6 +96,7 @@ tools/flash.sh img/sdcard.img /dev/sdX
 - The card also holds crestrons "golden" fallback system (the thing the reset button gets you into). `tools/mod-golden.py` swaps its init script for ours so golden mode becomes a root maintenance mode with touch buttons, normal boots dont notice.
   - Note : crestrons own golden mode reformats your data and reflashes the eMMC including u-boot. Ours doesnt, those scripts are stubbed.
 - `tools/ubootenv.py golden` flips the u-boot env on the card so the next boot lands there. Later you get there from the app: crusty -> System -> "Reboot to golden mode".
+- The golden screen has the common actions on top (back up, update (tick "Flash RAW (slow)" to rewrite everything instead of only the changed chunks, also for restore), save logs, reboot, shut down with a "Stay in golden mode" tick so the next boot is golden again) and a "More" list: brightness slider (golden mode is dim by default), restore, network info / start network, ssh server (keys are the ones from `/data/crusty/ssh`, import more from the stick), verbose boot (serial console, or the kernel log on screen from when Android starts: the kernel has no on-screen console), update recovery from the stick (so the card never has to leave the panel again: `setup.sh update` puts `crusty-recovery-update/` on the stick), system info, u-boot env, clear apps' data, reset crusty settings + PIN.
 - In golden mode "Back up eMMC to USB stick" copies the whole eMMC to the stick and verifies it end to end with md5 (about 9 minutes copy, 2 minutes verify).
 - On the PC `tools/build-emmc.py` builds a new `system` and `logo` from that backup: Chromium 95, su, Dropbear, the Home key fix, boot animation, boot logo, and most crestron daemons switched off.
 - Back in golden mode the install compares the eMMC in 4 MiB chunks and writes only the ones that differ, then reads it all back.

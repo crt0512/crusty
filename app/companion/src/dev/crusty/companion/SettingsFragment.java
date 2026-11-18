@@ -584,7 +584,7 @@ public class SettingsFragment extends PreferenceFragment {
 
     private String status() {
         StringBuilder sb = new StringBuilder();
-        sb.append("crusty 0.12 - logs ").append(CrustyService.sBootDir != null ? CrustyService.sBootDir.getName() : "-");
+        sb.append("crusty 0.17 - logs ").append(CrustyService.sBootDir != null ? CrustyService.sBootDir.getName() : "-");
         sb.append(" - wakelock ").append(CrustyService.sWakeLockHeld ? "held" : "off");
         if (Kiosk.active(ctx())) sb.append(" - KIOSK");
         if (Golden.active()) sb.append(" - GOLDEN MODE");

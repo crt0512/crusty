@@ -13,104 +13,8 @@ IMG=img/sdcard.img
 BACKUP=work/emmc-backup
 TITLE="crusty setup"
 
-# ------------------------------------------------------------------ ui
-if command -v whiptail >/dev/null; then UI=whiptail
-elif command -v dialog >/dev/null; then UI=dialog
-else UI=plain; fi
-
-msg() {   # $1 text
-    if [ $UI = plain ]; then printf '\n%b\n\n' "$1"; read -rp "[enter] " _
-    else $UI --title "$TITLE" --msgbox "$1" 22 76; fi
-}
-ask() {   # $1 text -> 0 = yes
-    if [ $UI = plain ]; then printf '\n%b\n' "$1"; read -rp "[y/N] " a; [[ $a == [yY]* ]]
-    else $UI --title "$TITLE" --yesno "$1" 22 76; fi
-}
-menu() {  # $1 text, then tag/label pairs -> chosen tag on stdout
-    local text=$1; shift
-    if [ $UI = plain ]; then
-        printf '\n%b\n' "$text" >&2
-        local tags=() i=1
-        while [ $# -gt 0 ]; do printf '  %d) %s\n' $i "$2" >&2; tags+=("$1"); shift 2; i=$((i + 1)); done
-        read -rp "> " n
-        [[ $n =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le ${#tags[@]} ] && echo "${tags[$((n - 1))]}"
-    else
-        $UI --title "$TITLE" --menu "$text" 22 76 10 "$@" 3>&1 1>&2 2>&3
-    fi
-}
-step() { clear 2>/dev/null; printf '\n\033[1m== %s\033[0m\n\n' "$1"; }
-die() { printf '\n\033[31m%s\033[0m\n' "$1" >&2; read -rp "[enter] " _; exit 1; }
-run() { echo "\$ $*"; "$@" || die "failed: $*"; }
-done_step() { mkdir -p work; echo "$1" > "$STATE"; }
-
-# ------------------------------------------------------------------ devices
-# removable disks (SD readers, USB sticks), "dev|size|model" per line
-removable_disks() {
-    lsblk -dpnbo NAME,SIZE,RM,TRAN,MODEL | while read -r name size rm tran model; do
-        case "$name" in /dev/loop*|/dev/zram*|/dev/sr*) continue ;; esac
-        [ "$rm" = 1 ] || [ "$tran" = usb ] || [[ $name == /dev/mmcblk* ]] || continue
-        [ "$size" -gt 0 ] || continue
-        echo "$name|$((size / 1000000)) MB|${model:-$tran}"
-    done
-}
-
-pick_disk() {   # $1 what -> device on stdout
-    local items=() d s m
-    while IFS='|' read -r d s m; do items+=("$d" "$s  $m"); done < <(removable_disks)
-    [ ${#items[@]} -gt 0 ] || { msg "no removable disk found, plug in the $1 and try again."; return 1; }
-    menu "which one is the $1?\n\nlook at the size TWICE, whatever you pick here gets read or written." "${items[@]}"
-}
-
-part() { case "$1" in *[0-9]) echo "${1}p$2" ;; *) echo "$1$2" ;; esac; }
-
-pick_sd() {   # -> $SD, checked to look like a TSW-760 card
-    while true; do
-        SD=$(pick_disk "panel's microSD card") || return 1
-        [ -n "$SD" ] || return 1
-        local n; n=$(lsblk -lnpo NAME "$SD" | grep -c "^$SD.\+")
-        if [ "$n" -ge 8 ] && lsblk -no LABEL "$(part "$SD" 5)" 2>/dev/null | grep -q sdcard; then return 0; fi
-        ask "$SD doesnt look like a TSW-760 card (expected 8 partitions, p5 labelled \"sdcard\").\n\nuse it anyway?" && return 0
-    done
-}
-
-unmount_all() {   # $1 disk
-    local p
-    for p in $(lsblk -lnpo NAME "$1" | tail -n +2); do
-        lsblk -no MOUNTPOINT "$p" | grep -q . || continue
-        udisksctl unmount -b "$p" >/dev/null 2>&1 || sudo umount "$p"
-    done
-}
-
-STICK_MNT=
-mount_stick() {   # -> $STICK_MNT (first partition of a FAT32 stick)
-    local dev p fs
-    dev=$(pick_disk "USB stick") || return 1
-    [ -n "$dev" ] || return 1
-    p=$(part "$dev" 1); [ -b "$p" ] || p=$dev
-    fs=$(lsblk -no FSTYPE "$p")
-    [ "$fs" = vfat ] || { msg "$p is \"$fs\", not FAT32. format the stick as FAT32 (one partition) first."; return 1; }
-    STICK_MNT=$(lsblk -no MOUNTPOINT "$p" | head -1)
-    if [ -z "$STICK_MNT" ]; then
-        udisksctl mount -b "$p" >/dev/null || return 1
-        STICK_MNT=$(lsblk -no MOUNTPOINT "$p" | head -1)
-    fi
-    STICK_DEV=$dev
-    [ -n "$STICK_MNT" ]
-}
-
-eject_stick() { sync; unmount_all "$STICK_DEV"; udisksctl power-off -b "$STICK_DEV" >/dev/null 2>&1 || true; }
-
-# ------------------------------------------------------------------ checks
-check_tools() {
-    local miss=() c
-    for c in python3 java curl unzip 7z openssl keytool sfdisk debugfs e2fsck resize2fs dumpe2fs \
-             cpio gzip lz4 md5sum sha256sum lsblk udisksctl; do
-        command -v "$c" >/dev/null || miss+=("$c")
-    done
-    [ ${#miss[@]} = 0 ] && return 0
-    msg "missing programs: ${miss[*]}\n\non Debian/Ubuntu:\n  sudo apt install python3 default-jdk curl unzip p7zip-full openssl \\\\\n    e2fsprogs fdisk cpio gzip lz4 udisks2 whiptail\n\nthen run ./setup.sh again."
-    exit 1
-}
+# shared dialogs + device pickers
+source tools/lib.sh
 
 # ------------------------------------------------------------------ steps
 s_intro() {
@@ -211,11 +115,14 @@ s_backup() {
 1. put the microSD card back into the panel.\n\
 2. plug the USB stick into the panels USB port.\n\
 3. power it on. it starts in crustys maintenance mode (\"golden mode\"):\n\
-   a banner with big buttons, cant miss it.\n\
+   mght take a while to boot, longer than might feel it should\n\
 4. tap \"Back up eMMC to USB stick\" and wait for\n\
-   \"backup DONE + verified\" (10-20 min, depends on the stick).\n\
-5. tap \"Save logs & shut down\".\n\
-6. take the card and the stick out and put both into this PC."
+   \"backup DONE + verified\" (5-10 min, depends on the stick).\n\
+5. tap \"Shut down\" (it saves the logs to the stick first).\n\
+6. unplug the panel as soon as the screen goes dark\n\
+7. take the card and the stick out and put both into this PC.\n\
+Note : If the backup fails due to Checksum errors use a different USB stick\n\
+       Make sure to not reboot the panel when swapping out the USB stick!"
     ask "did the backup end with \"backup DONE + verified\"?" || return 1
     done_step 6
 }
@@ -223,8 +130,16 @@ s_backup() {
 s_import() {
     step "Step 6: copy the eMMC backup"
     mount_stick || return 1
-    local src; src=$(ls -d "$STICK_MNT"/crusty-emmc-backup-* 2>/dev/null | tail -1)
-    [ -n "$src" ] || { eject_stick; die "no crusty-emmc-backup-* folder on the stick"; }
+    local src d list=() items=()
+    for d in "$STICK_MNT"/crusty-emmc-backup-*; do [ -d "$d" ] && list+=("$d"); done
+    [ ${#list[@]} -gt 0 ] || { eject_stick; die "no crusty-emmc-backup-* folder on the stick"; }
+    if [ ${#list[@]} = 1 ]; then
+        src=${list[0]}
+    else   # several panels share one stick, the folders are named after the panels ethernet MAC (printed on the device)
+        for d in "${list[@]}"; do items+=("$d" "$(basename "$d")  $(grep -m1 '^ethaddr=' "$d/info.txt" 2>/dev/null)"); done
+        src=$(menu "there is more than one eMMC backup on the stick, which one is of the panel you are setting up?\n\nfolders are named after the panels ethernet MAC address." "${items[@]}") || src=
+        [ -n "$src" ] || { eject_stick; return 1; }
+    fi
     if [ -d "$BACKUP" ] && ls "$BACKUP"/mmcblk1.part* >/dev/null 2>&1; then
         local keep="$BACKUP.$(date +%Y%m%d-%H%M%S)"
         echo ">> keeping the previous backup as $keep"
@@ -237,20 +152,27 @@ s_import() {
     done_step 7
 }
 
-build_update() {   # eMMC update + restore sets, card, stick
+build_update() {   # $1 = sd (default) | usb. eMMC update + restore sets, then the card or just the recovery update, then the stick
     run tools/build-su.sh
     run tools/build-dropbear.sh
     run tools/fetch-chromium.sh
     run python3 tools/build-emmc.py
-    msg "put the microSD card into the reader (if it isnt in there already).\nits /data gets read first so the settings you made on the panel survive."
-    pick_sd || return 1
-    unmount_all "$SD"
-    run tools/read-data.sh "$SD"
-    build_card
-    run tools/flash.sh --incremental out/sdcard-mod.img "$SD"
+    if [ "${1:-sd}" = usb ]; then
+        # the card stays in the panel, golden mode installs the new app + scripts from the stick itself
+        run tools/build-apps.sh
+        run python3 tools/build-recovery.py
+    else
+        msg "put the microSD card into the reader (if it isnt in there already).\nits /data gets read first so the settings you made on the panel survive."
+        pick_sd || return 1
+        unmount_all "$SD"
+        run tools/read-data.sh "$SD"
+        build_card
+        run python3 tools/build-recovery.py
+        run tools/flash.sh --incremental out/sdcard-mod.img "$SD"
+    fi
     msg "now the USB stick (only the changed parts get written)."
     mount_stick || return 1
-    run python3 tools/sync-stick.py "$STICK_MNT" out/crusty-emmc-update out/crusty-emmc-restore
+    run python3 tools/sync-stick.py "$STICK_MNT" out/crusty-emmc-update out/crusty-emmc-restore out/crusty-recovery-update
     eject_stick
 }
 
@@ -266,11 +188,11 @@ s_install() {
    it holds the panels /data.\n\
 2. plug the USB stick into the panel.\n\
 3. power on. it starts in maintenance mode again.\n\
-4. tap \"Install crusty eMMC update from USB\". it checks everything on the\n\
-   stick first and only writes what differs, then reads it all back.\n\
+4. tap \"Update eMMC from USB stick\". it runs a few checks on the\n\
+   usb stick first and only writes what differs, then reads it all back.\n\
 5. wait for \"install DONE + verified\", then tap\n\
    \"Reboot to the normal system\".\n\n\
-if anything goes wrong: \"Restore original eMMC from USB\" puts crestrons back."
+if anything goes wrong: More -> \"Restore original eMMC from USB stick\" puts crestrons back."
     ask "did it say \"install DONE + verified\"?" || return 1
     done_step 9
 }
@@ -290,9 +212,25 @@ changed something? ./setup.sh update"
 update() {
     [ -d work/emmc/raw ] || die "no extracted eMMC backup yet - run ./setup.sh first"
     check_tools
+    local how
+    how=$(menu "how does the update get to the panel?" \
+        usb "USB stick: golden mode updates itself from the stick, the card stays in the panel" \
+        sd "SD card: the card goes into this PC, its /data is read and the card gets written") || exit 0
+    [ -n "$how" ] || exit 0
     step "update: rebuild + write what changed"
-    build_update || exit 1
-    s_install && msg "updated."
+    build_update "$how" || exit 1
+    if [ "$how" = usb ]; then
+        msg "on the panel (card and stick in):\n\n\
+1. start golden mode (long press power -> crusty -> reboot to golden mode)\n\
+2. More -> \"Update recovery from USB stick\", then More -> \"Reboot to golden mode\"\n\
+3. only if the eMMC changed too: \"Update eMMC from USB stick\" (it says nothing to do if its current),\n\
+   then \"Reboot to the normal system\"\n\n\
+the recovery update only exists in golden mode builds that already have it, if yours is older use the SD card once."
+    else
+        local keep; keep=$(cat "$STATE" 2>/dev/null || echo 0)
+        s_install && msg "updated."
+        done_step "$keep"   # s_install writes its own step number, an update isnt a step
+    fi
 }
 
 # ------------------------------------------------------------------ main

@@ -26,8 +26,9 @@ what changes in /system (an ext4 image, edited offline with debugfs like the SD 
 what changes in logo: the u-boot boot logo ("bootup") in both AML_RES containers, CRC recomputed.
 
 MANIFEST format (read by app/golden/crestInit.sh):
-  <partition> <file> <size KiB> <md5> <allowed current md5s, comma separated | *>
-Install allows the original + every crusty image we ever built (out/emmc-history.txt).
+  <partition> <file> <size KiB> <md5> <allowed current states, comma separated | *>
+a state is the md5 of the whole partition, or p<KiB>:<md5> = md5 of its first KiB (for the stock ext4 partitions: the filesystem only, the unused bytes behind its end differ from panel to panel).
+Install allows the original (whole + filesystem form) + every crusty image we ever built (out/emmc-history.txt).
 """
 import argparse
 import atexit
@@ -406,9 +407,32 @@ def write_chunks(img):
             out.write(hashlib.md5(b).hexdigest() + "\n")
 
 
+def fs_kib(path):
+    """size of the ext2/3/4 filesystem in KiB (superblock), 0 if that isnt ext"""
+    with open(path, "rb") as f:
+        f.seek(1024)
+        sb = f.read(1024)
+    if int.from_bytes(sb[56:58], "little") != 0xEF53:
+        return 0
+    return int.from_bytes(sb[4:8], "little") * (1024 << int.from_bytes(sb[24:28], "little")) // 1024
+
+
+def md5_prefix(path, kib):
+    h = hashlib.md5()
+    left = kib * 1024
+    with open(path, "rb") as f:
+        while left > 0:
+            b = f.read(min(left, 1 << 20))
+            if not b:
+                break
+            h.update(b)
+            left -= len(b)
+    return h.hexdigest()
+
+
 def manifest(path, lines):
     with open(path, "w") as f:
-        f.write("# <partition> <file> <size KiB> <md5> <allowed current md5s | *>  (tools/build-emmc.py)\n")
+        f.write("# <partition> <file> <size KiB> <md5> <allowed current states: md5 | p<KiB>:<md5 of the first KiB> | *>  (tools/build-emmc.py)\n")
         for l in lines:
             f.write(" ".join(l) + "\n")
 
@@ -457,7 +481,11 @@ def main():
     for p in ("system", "logo"):
         f = os.path.join(upd, f"{p}.img")
         m = md5(f)
-        allowed = [orig[p]] + [x for x in hist.get(p, []) if x != m]
+        allowed = [orig[p]]
+        fk = fs_kib(os.path.join(raw, f"{p}.img"))
+        if fk:
+            allowed.append(f"p{fk}:{md5_prefix(os.path.join(raw, f'{p}.img'), fk)}")
+        allowed += [x for x in hist.get(p, []) if x != m]
         lines_u.append((p, f"{p}.img", str(os.path.getsize(f) // 1024), m, ",".join(dict.fromkeys(allowed))))
         lines_r.append((p, f"{p}.img", str(os.path.getsize(f) // 1024), orig[p], "*"))
         if m not in hist.get(p, []):

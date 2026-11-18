@@ -17,3 +17,4 @@ com.crestron.speechtotextservice   # crestron voice control (2 persistent proces
 com.crestron.service               # sets the keyboard language from control-system joins
 com.crestron.bluetoothleservice    # crestron BLE presence/beacons
 org.pjsip.pjsua                    # SIP client for the crestron intercom
+com.sonos.acr                      # Sonos app that came preinstalled on some panels, not needed (bloat)

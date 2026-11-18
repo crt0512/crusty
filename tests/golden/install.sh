@@ -64,6 +64,20 @@ printf "system system.img 1024 %s %s,%s\nlogo logo.img 64 %s %s\n" "$(md5 $U/sys
     "$(md5 $T/prev-crusty)" "$(md5 $U/logo.img)" "$(md5 $T/orig-logo)" > "$U/MANIFEST"
 req install "install new build (2 chunks differ)"; state
 grep -E 'need writing|changed chunks' "$T/data/crusty/golden.log" | tail -2 | sed 's/^/   log: /'
+# RAW: rewrites everything even if the eMMC is already up to date, no chunk logic
+: > "$T/data/crusty/golden.log"
+req "install raw" "install RAW (already up to date)"; state
+req "restore raw" "restore RAW"; state
+grep -E 'RAW|writing (system|logo) \(' "$T/data/crusty/golden.log" | sed 's/^[0-9-]* [0-9:]* /   log: /'
+# the stock eMMC of another panel: same filesystem, different bytes behind its end. the MANIFEST then lists the original as p<KiB>:<md5 of the first KiB>
+req restore "restore (reset)"
+printf "system system.img 1024 %s p512:%s\nlogo logo.img 64 %s %s\n" "$(md5 $U/system.img)" "$(head -c 524288 $T/orig-system | md5sum | cut -d' ' -f1)" \
+    "$(md5 $U/logo.img)" "$(md5 $T/orig-logo)" > "$U/MANIFEST"
+printf 'Z' | dd of="$T/dev/system" bs=1 seek=$((800 * 1024)) conv=notrunc status=none   # differs behind the filesystem
+req install "install over a stock filesystem with a different tail"; state
+req restore "restore (reset)"
+printf 'Z' | dd of="$T/dev/system" bs=1 seek=100 conv=notrunc status=none            # differs inside the filesystem
+req install "install over a changed filesystem (must be refused)"; state
 # a damaged chunk on the stick has to be refused BEFORE anything gets written
 printf 'X' | dd of="$U/system.img" bs=1 seek=$((5 * 65536)) conv=notrunc status=none
 req restore "restore (reset)"; req install "install with a damaged chunk on the stick"; state

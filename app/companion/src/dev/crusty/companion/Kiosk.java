@@ -85,7 +85,7 @@ final class Kiosk {
                 || p.equals("android");              // system dialogs (ANR, ...)
     }
 
-    private static void disableStatusBar(Context c, int flags) {
+    static void disableStatusBar(Context c, int flags) {
         try {
             if (sStatusBar == null) sStatusBar = c.getApplicationContext().getSystemService("statusbar");
             Method m = sStatusBar.getClass().getMethod("disable", int.class);

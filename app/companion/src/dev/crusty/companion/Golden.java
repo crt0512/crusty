@@ -4,20 +4,23 @@ import android.content.Context;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.os.Handler;
-import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 
 import java.io.File;
+import java.io.RandomAccessFile;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,19 +33,28 @@ final class Golden {
     static final File STATUS = new File("/data/crusty/golden-status");
     static final File REQUEST = new File("/data/crusty/golden-request");
     static final File LOG = new File("/data/crusty/golden.log");
+    static final File SSH_FLAG = new File("/data/crusty/golden-ssh");   // there while the golden script's dropbear runs
+    static final File VERBOSE_FLAG = new File("/data/crusty/golden-verbose");   // there while u-boot's initargs carry the verbose console
 
     private static long sRequestedAt;
     private static String sStatusAtRequest;
     private static String sLocalError;
 
-    static boolean active() {
-        String m = CrustyService.read(new File("/proc/mounts"));
-        if (m == null) return false;
-        for (String l : m.split("\n")) {
-            String[] f = l.split(" ");
-            if (f.length > 1 && "/system".equals(f[1]) && f[0].contains("mmcblk0p2")) return true;
+    private static Boolean sActive;
+
+    // /system never changes under a running process, so ask /proc/mounts once (this gets called from key and LED code too)
+    static synchronized boolean active() {
+        if (sActive == null) {
+            sActive = false;
+            String m = CrustyService.read(new File("/proc/mounts"));
+            if (m != null) {
+                for (String l : m.split("\n")) {
+                    String[] f = l.split(" ");
+                    if (f.length > 1 && "/system".equals(f[1]) && f[0].contains("mmcblk0p2")) sActive = true;
+                }
+            }
         }
-        return false;
+        return sActive;
     }
 
     // the banner cant do root work itself so it begs crustys golden script (root) to do it
@@ -77,11 +89,25 @@ final class Golden {
         return s.length() > 0 ? s : "waiting for the golden script ... (no " + STATUS + " yet)";
     }
 
+    // the end of golden.log, the file keeps growing over many golden sessions so only the last 32 KiB get read
     private static String logTail(int lines) {
-        String[] l = read(LOG).split("\n");
-        StringBuilder sb = new StringBuilder();
-        for (int i = Math.max(0, l.length - lines); i < l.length; i++) sb.append(l[i]).append('\n');
-        return sb.toString().trim();
+        try {
+            RandomAccessFile f = new RandomAccessFile(LOG, "r");
+            try {
+                long len = f.length(), start = Math.max(0, len - 32768);
+                byte[] b = new byte[(int) (len - start)];
+                f.seek(start);
+                f.readFully(b);
+                String[] l = new String(b, "UTF-8").split("\n");
+                StringBuilder sb = new StringBuilder();
+                for (int i = Math.max(start > 0 ? 1 : 0, l.length - lines); i < l.length; i++) sb.append(l[i]).append('\n');
+                return sb.toString().trim();
+            } finally {
+                f.close();
+            }
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     // ---------------------------------------------------------------- progress
@@ -182,37 +208,124 @@ final class Golden {
     }
 
     // ---------------------------------------------------------------- UI
+    // looks like the crusty app (dark list, one row per action) with a yellow title bar, then the log panel, then the actions
 
-    private static float sp(Context c, float v) {
-        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v, c.getResources().getDisplayMetrics());
+    private static final int YELLOW = Color.rgb(0xff, 0xc8, 0x2e);
+    private static final int BG = Color.rgb(0x21, 0x21, 0x21);
+    private static final int PRESSED = Color.rgb(0x3d, 0x3d, 0x3d);
+    private static final int DIVIDER = Color.rgb(0x42, 0x42, 0x42);
+    private static final int SUBTEXT = Color.rgb(0xb0, 0xb0, 0xb0);
+    private static final int WARN = Color.rgb(0xff, 0xb7, 0x4d);
+    private static final int BAD = Color.rgb(0xff, 0x70, 0x60);
+
+    private static LinearLayout sList;
+    private static TextView sStatus;
+    private static CheckBox sSshBox, sVerboseBox, sScreenBox;   // only while the "more" list is showing
+    private static boolean sStay;          // "stay in golden mode" next to Shut down
+    private static boolean sRawInstall, sRawRestore;   // "Flash RAW (slow)" next to Update / Restore
+
+    private static final String BRIGHTNESS_PREF = "golden.brightness";   // 0 = never touched, then android decides (and golden mode is dim)
+
+    private static int backlight() {
+        String v = CrustyService.read(Blanker.BACKLIGHT);
+        try { return v == null ? 128 : Integer.parseInt(v.trim()); } catch (NumberFormatException e) { return 128; }
     }
 
-    private static TextView text(Context c, float size, int color) {
+    // straight to the backlight like Blanker does, android alone left golden mode dim as hell. kept in a pref so it survives golden reboots
+    private static void applyBrightness(Context c) {
+        int want = Prefs.num(c, BRIGHTNESS_PREF, 0);
+        if (want > 0 && backlight() != want) Blanker.writeBacklight(String.valueOf(want));
+    }
+
+    private static View brightnessRow(final Context c) {
+        LinearLayout r = new LinearLayout(c);
+        r.setOrientation(LinearLayout.VERTICAL);
+        r.setPadding(dp(c, 16), dp(c, 10), dp(c, 16), dp(c, 10));
+        final TextView t = label(c, 18, Color.WHITE);
+        r.addView(t);
+        SeekBar bar = new SeekBar(c);
+        bar.setMax(245);   // 10..255, 0 would be a black screen you cant get back from without the slider
+        int cur = Math.max(10, Math.min(255, Prefs.num(c, BRIGHTNESS_PREF, backlight())));
+        bar.setProgress(cur - 10);
+        t.setText("Brightness " + cur * 100 / 255 + "%");
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar b, int progress, boolean fromUser) {
+                int v = progress + 10;
+                t.setText("Brightness " + v * 100 / 255 + "%");
+                if (!fromUser) return;
+                Prefs.get(c).edit().putString(BRIGHTNESS_PREF, String.valueOf(v)).apply();
+                Blanker.writeBacklight(String.valueOf(v));
+            }
+            public void onStartTrackingTouch(SeekBar b) { }
+            public void onStopTrackingTouch(SeekBar b) { }
+        });
+        r.addView(bar);
+        return r;
+    }
+
+    private static final int DISABLE_BACK = 0x00400000;   // android.app.StatusBarManager, hidden
+
+    // no shade, no notification icons, and the nav bar buttons (back, home, recents) are taken away even if the bar itself is still there.
+    // SystemUI may reset that so the tick below repeats it. the bar itself goes away via Tweaks.applyBars (crusty_navbar), the side buttons are dead in ButtonService, their leds are off via LedController.
+    private static void hideShade(Context c) {
+        Kiosk.disableStatusBar(c, Kiosk.DISABLE_EXPAND | Kiosk.DISABLE_NOTIFICATION_ICONS | Kiosk.DISABLE_NOTIFICATION_ALERTS
+                | Kiosk.DISABLE_HOME | Kiosk.DISABLE_RECENT | DISABLE_BACK);
+    }
+
+    private static int dp(Context c, float v) {
+        return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, c.getResources().getDisplayMetrics()));
+    }
+
+    private static TextView label(Context c, float sp, int color) {
         TextView t = new TextView(c);
-        t.setTextSize(size);
+        t.setTextSize(sp);
         t.setTextColor(color);
-        t.setGravity(Gravity.CENTER);
         return t;
     }
 
-    // big button, if confirm != null it wants a second tap within 5 s (for the ones that can ruin your day)
-    private static Button button(final Context c, final String label, final String confirm, final Runnable action) {
-        final Button b = new Button(c);
-        b.setText(label);
-        b.setTextSize(24);
-        b.setAllCaps(false);
-        b.setMinHeight(110);
-        b.setPadding(30, 20, 30, 20);
+    // one action row: title + summary, optional view on the right. confirm != null wants a second tap within 5 s (for the ones that can ruin your day)
+    private static View row(final Context c, String title, String summary, final String confirm, View right, final Runnable action) {
+        LinearLayout r = new LinearLayout(c);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setMinimumHeight(dp(c, 64));
+        r.setPadding(dp(c, 16), dp(c, 8), dp(c, 16), dp(c, 8));
+        StateListDrawable bg = new StateListDrawable();
+        bg.addState(new int[] { android.R.attr.state_pressed }, new ColorDrawable(PRESSED));
+        bg.addState(new int[0], new ColorDrawable(BG));
+        r.setBackgroundDrawable(bg);
+        r.setClickable(true);
+
+        LinearLayout texts = new LinearLayout(c);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        TextView t = label(c, 18, Color.WHITE);
+        t.setText(title);
+        texts.addView(t);
+        final TextView sub = label(c, 14, SUBTEXT);
+        sub.setText(summary);
+        sub.setVisibility(summary == null ? View.GONE : View.VISIBLE);
+        texts.addView(sub);
+        r.addView(texts, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        if (right != null) r.addView(right);
+
+        final String idle = summary;
         final Handler h = new Handler();
         final boolean[] armed = { false };
         final Runnable disarm = new Runnable() {
-            public void run() { armed[0] = false; b.setText(label); }
+            public void run() {
+                armed[0] = false;
+                sub.setText(idle);
+                sub.setTextColor(SUBTEXT);
+                sub.setVisibility(idle == null ? View.GONE : View.VISIBLE);
+            }
         };
-        b.setOnClickListener(new View.OnClickListener() {
+        r.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 if (confirm != null && !armed[0]) {
                     armed[0] = true;
-                    b.setText("Tap again to confirm: " + confirm);
+                    sub.setText("Tap again to confirm: " + confirm);
+                    sub.setTextColor(WARN);
+                    sub.setVisibility(View.VISIBLE);
                     h.postDelayed(disarm, 5000);
                     return;
                 }
@@ -221,102 +334,210 @@ final class Golden {
                 action.run();
             }
         });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(0, 12, 0, 12);
-        b.setLayoutParams(lp);
+        return r;
+    }
+
+    private static void add(Context c, View row) {
+        sList.addView(row);
+        View d = new View(c);
+        d.setBackgroundColor(DIVIDER);
+        sList.addView(d, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1));
+    }
+
+    // "Flash RAW (slow)": no incremental write, every partition gets rewritten completely (flaky flash debugging)
+    private static CheckBox rawBox(Context c, final boolean install) {
+        CheckBox b = new CheckBox(c);
+        b.setText("Flash RAW (slow)");
+        b.setTextColor(Color.WHITE);
+        b.setTextSize(14);
+        b.setChecked(install ? sRawInstall : sRawRestore);
+        b.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(android.widget.CompoundButton v, boolean on) {
+                if (install) sRawInstall = on; else sRawRestore = on;
+            }
+        });
         return b;
     }
 
+    private static Runnable act(final String what) {
+        return new Runnable() {
+            public void run() {
+                request(what);
+                sStatus.setText("request sent - waiting for the golden script ...");
+            }
+        };
+    }
+
+    private static void showMain(final Context c) {
+        sList.removeAllViews();
+        sSshBox = null;
+        sVerboseBox = null;
+        sScreenBox = null;
+        add(c, row(c, "Back up eMMC to USB stick", "copies the whole internal eMMC to the stick and verifies it, 5-10 min", null, null, act("backup")));
+        add(c, row(c, "Update eMMC from USB stick", "writes the crusty eMMC update (crusty-emmc-update/ on the stick), only what changed unless RAW", "write the eMMC", rawBox(c, true), new Runnable() {
+            public void run() { act(sRawInstall ? "install raw" : "install").run(); }
+        }));
+        add(c, row(c, "Save logs to USB stick", "golden.log, crusty logs, dmesg and logcat", null, null, act("savelogs")));
+        add(c, row(c, "Reboot to the normal system", "saves the logs to the USB stick first", "reboot", null, act("reboot")));
+        CheckBox stay = new CheckBox(c);
+        stay.setText("Stay in golden mode");
+        stay.setTextColor(Color.WHITE);
+        stay.setTextSize(14);
+        stay.setChecked(sStay);
+        stay.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(android.widget.CompoundButton b, boolean on) { sStay = on; }
+        });
+        add(c, row(c, "Shut down", "saves the logs to the USB stick first - ticked: the next boot is golden mode again", "shut down", stay, new Runnable() {
+            public void run() {
+                CrustyService.event("golden: shut down, stay in golden=" + sStay);
+                act(sStay ? "shutdown stay" : "shutdown").run();
+            }
+        }));
+        add(c, row(c, "More >", "brightness, restore, network, ssh, system info, resets", null, null, new Runnable() {
+            public void run() { showMore(c); }
+        }));
+    }
+
+    private static void showMore(final Context c) {
+        sList.removeAllViews();
+        add(c, row(c, "< Back", null, null, null, new Runnable() {
+            public void run() { showMain(c); }
+        }));
+        add(c, brightnessRow(c));
+        add(c, row(c, "Restore original eMMC from USB stick", "writes the original images back (crusty-emmc-restore/ on the stick), only what changed unless RAW", "restore the eMMC", rawBox(c, false), new Runnable() {
+            public void run() { act(sRawRestore ? "restore raw" : "restore").run(); }
+        }));
+        add(c, row(c, "Update recovery from USB stick", "installs the golden script, tools and the crusty app from crusty-recovery-update/ on the stick, then reboot to golden mode", "update the recovery", null, act("recovery")));
+        add(c, row(c, "Reboot to golden mode", "saves the logs, reboots into this recovery again (runs a freshly updated one)", "reboot", null, act("reboot stay")));
+        add(c, row(c, "Network info", "link state, addresses, routes, DNS", null, null, act("netinfo")));
+        add(c, row(c, "Start network", "runs Crestron's AndroidEthInit (static IP or DHCP, as the panel was set up)", null, null, act("network")));
+        sSshBox = new CheckBox(c);
+        sSshBox.setClickable(false);
+        sSshBox.setFocusable(false);
+        sSshBox.setChecked(SSH_FLAG.exists());
+        add(c, row(c, "SSH server", "key login as root on port 22, same keys as the normal system", null, sSshBox, new Runnable() {
+            public void run() { act(SSH_FLAG.exists() ? "sshstop" : "sshstart").run(); }
+        }));
+        add(c, row(c, "Import SSH keys from USB stick", "adds authorized_keys / *.pub from the root of the stick", null, null, act("sshkeys")));
+        sVerboseBox = new CheckBox(c);
+        sVerboseBox.setClickable(false);
+        sVerboseBox.setFocusable(false);
+        sVerboseBox.setChecked(VERBOSE_FLAG.exists());
+        add(c, row(c, "Verbose boot (serial console)", "kernel and init messages on the UART (115200 baud, no output on the screen) in every boot until you untick it", null, sVerboseBox, new Runnable() {
+            public void run() { act(VERBOSE_FLAG.exists() ? "verboseoff" : "verboseon").run(); }
+        }));
+        sScreenBox = new CheckBox(c);
+        sScreenBox.setClickable(false);
+        sScreenBox.setFocusable(false);
+        sScreenBox.setChecked(BootConsole.wanted());
+        add(c, row(c, "Verbose boot on screen", "normal boots show the kernel log full screen over the boot animation, from about when Android starts until it is booted (tap to close). the first seconds of the kernel are serial only", null, sScreenBox, new Runnable() {
+            public void run() { act(BootConsole.wanted() ? "verbosescreenoff" : "verbosescreenon").run(); }
+        }));
+        add(c, row(c, "System info", "kernel, memory, disks, USB devices", null, null, act("sysinfo")));
+        add(c, row(c, "U-Boot environment", "boot_retry, golden flags and the rest", null, null, act("ubootenv")));
+        add(c, row(c, "Clear apps' data", "empties the data of all apps (not the apps, crusty or the settings database)", "clear the data of all apps", null, act("cleardata")));
+        add(c, row(c, "Reset crusty settings & PIN", "crusty's own settings back to defaults, removes the PIN", "reset crusty", null, act("resetcrusty")));
+    }
+
     static void showBanner(final Context c) {
-        LinearLayout l = new LinearLayout(c);
-        l.setOrientation(LinearLayout.VERTICAL);
-        l.setGravity(Gravity.CENTER_HORIZONTAL);
-        l.setPadding(48, 30, 48, 30);
+        LinearLayout root = new LinearLayout(c);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(BG);
+        // no status bar / nav bar here: the window sits above them (TYPE_SYSTEM_ERROR + NO_LIMITS below), this also asks them to hide and the shade is disabled
+        root.setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        hideShade(c);
+        applyBrightness(c);
 
-        TextView title = text(c, 40, Color.rgb(0xff, 0xc8, 0x2e));
-        title.setText("Mmmm yes, this is golden mode.");
+        TextView title = label(c, 20, Color.BLACK);
+        title.setText("Crusty Recovery (Golden Mode)");
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        l.addView(title);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setPadding(dp(c, 16), 0, dp(c, 16), 0);
+        title.setBackgroundColor(YELLOW);
+        root.addView(title, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(c, 56)));
 
-        TextView sub = text(c, 16, Color.rgb(0xe0, 0xd0, 0xa0));
-        sub.setText("crusty maintenance mode - /system from SD card p2 - crestrons golden scripts are disabled");
-        l.addView(sub);
+        // fixed log panel, sticks to the end unless you scroll up
+        final TextView log = label(c, 12, Color.rgb(0xc8, 0xc8, 0xc8));
+        log.setTypeface(Typeface.MONOSPACE);
+        log.setPadding(dp(c, 12), dp(c, 6), dp(c, 12), dp(c, 6));
+        final ScrollView logScroll = new ScrollView(c);
+        logScroll.setBackgroundColor(Color.rgb(0x12, 0x12, 0x12));
+        logScroll.addView(log);
+        int logHeight = Math.max(dp(c, 110), c.getResources().getDisplayMetrics().heightPixels * 27 / 100);
+        root.addView(logScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, logHeight));
 
-        final TextView status = text(c, 24, Color.WHITE);
-        status.setPadding(0, 24, 0, 8);
-        l.addView(status);
-
+        LinearLayout strip = new LinearLayout(c);
+        strip.setOrientation(LinearLayout.VERTICAL);
+        strip.setPadding(dp(c, 16), dp(c, 6), dp(c, 16), dp(c, 6));
+        sStatus = label(c, 15, Color.WHITE);
+        strip.addView(sStatus);
         final ProgressBar bar = new ProgressBar(c, null, android.R.attr.progressBarStyleHorizontal);
         bar.setMax(1000);
         bar.setVisibility(View.GONE);
-        l.addView(bar, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 48));
+        strip.addView(bar, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(c, 12)));
+        final TextView prog = label(c, 13, YELLOW);
+        prog.setVisibility(View.GONE);
+        strip.addView(prog);
+        root.addView(strip);
 
-        final TextView prog = text(c, 20, Color.rgb(0xff, 0xe0, 0x90));
-        l.addView(prog);
-
-        final Runnable[] refresh = new Runnable[1];
-        l.addView(button(c, "Back up eMMC to USB stick", null, new Runnable() {
-            public void run() { request("backup"); status.setText("request sent - waiting for the golden script ..."); }
-        }));
-        l.addView(button(c, "Install crusty eMMC update from USB", "write the eMMC", new Runnable() {
-            public void run() { request("install"); status.setText("request sent - waiting for the golden script ..."); }
-        }));
-        l.addView(button(c, "Restore original eMMC from USB", "restore the eMMC", new Runnable() {
-            public void run() { request("restore"); status.setText("request sent - waiting for the golden script ..."); }
-        }));
-        l.addView(button(c, "Save logs & shut down", "shut down", new Runnable() {
-            public void run() {
-                CrustyService.event("golden: save logs + shut down");
-                CrustyService.sh("sync");
-                request("shutdown");
-                status.setText("request sent - waiting for the golden script ...");
-            }
-        }));
-        l.addView(button(c, "Reboot to the normal system", "reboot", new Runnable() {
-            public void run() {
-                CrustyService.event("golden: reboot to normal");
-                ((PowerManager) c.getSystemService(Context.POWER_SERVICE)).reboot(null);
-            }
-        }));
-
-        final TextView log = text(c, 14, Color.rgb(0xc0, 0xb8, 0x98));
-        log.setTypeface(Typeface.MONOSPACE);
-        log.setPadding(0, 20, 0, 0);
-        l.addView(log);
-
+        sList = new LinearLayout(c);
+        sList.setOrientation(LinearLayout.VERTICAL);
         ScrollView sv = new ScrollView(c);
-        sv.setBackgroundColor(Color.rgb(0x3a, 0x2c, 0x00));
-        sv.addView(l);
+        sv.addView(sList);
+        root.addView(sv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        showMain(c);
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.TYPE_SYSTEM_ALERT,
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                WindowManager.LayoutParams.TYPE_SYSTEM_ERROR,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                        | WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 PixelFormat.OPAQUE);
         lp.setTitle("crusty-golden");
         try {
-            ((WindowManager) c.getSystemService(Context.WINDOW_SERVICE)).addView(sv, lp);
+            ((WindowManager) c.getSystemService(Context.WINDOW_SERVICE)).addView(root, lp);
         } catch (Exception e) {
             CrustyService.event("golden: banner failed: " + e);
             return;
         }
         final Handler h = new Handler();
-        refresh[0] = new Runnable() {
+        final String[] shown = { null };
+        h.post(new Runnable() {
+            private int ticks;
             public void run() {
+                if (ticks++ % 5 == 0) {
+                    hideShade(c);
+                    Blanker.writeLed("0");   // side button leds stay dark
+                    applyBrightness(c);
+                }
                 String st = statusText();
-                status.setText(st);
+                sStatus.setText(st);
                 boolean bad = st.startsWith("ERROR") || st.startsWith("WARNING") || st.contains("FAILED");
-                status.setTextColor(bad ? Color.rgb(0xff, 0x70, 0x60) : Color.WHITE);
+                sStatus.setTextColor(bad ? BAD : Color.WHITE);
                 int[] pr = new int[1];
                 String ps = progress(pr, read(STATUS));
                 bar.setVisibility(pr[0] >= 0 ? View.VISIBLE : View.GONE);
                 if (pr[0] >= 0) bar.setProgress(pr[0]);
                 prog.setText(ps != null ? ps : "");
-                log.setText(logTail(5));
+                prog.setVisibility(ps != null ? View.VISIBLE : View.GONE);
+                if (sSshBox != null) sSshBox.setChecked(SSH_FLAG.exists());
+                if (sVerboseBox != null) sVerboseBox.setChecked(VERBOSE_FLAG.exists());
+                if (sScreenBox != null) sScreenBox.setChecked(BootConsole.wanted());
+
+                String t = logTail(300);
+                if (!t.equals(shown[0])) {
+                    View inner = logScroll.getChildAt(0);
+                    boolean atBottom = inner == null || logScroll.getScrollY() + logScroll.getHeight() >= inner.getHeight() - dp(c, 24);
+                    shown[0] = t;
+                    log.setText(t);
+                    if (atBottom) logScroll.post(new Runnable() {
+                        public void run() { logScroll.fullScroll(View.FOCUS_DOWN); }
+                    });
+                }
                 h.postDelayed(this, 1000);
             }
-        };
-        h.post(refresh[0]);
+        });
     }
 }

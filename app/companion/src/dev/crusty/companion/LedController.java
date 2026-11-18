@@ -44,6 +44,7 @@ final class LedController {
     }
 
     int desiredLevel() {
+        if (Golden.active()) return 0;   // the side buttons are dead in golden mode, their leds are dark
         int level = clamp(Prefs.num(mContext, Prefs.LED_LEVEL, 128));
         if (Blanker.blanked()) {
             String m = Prefs.str(mContext, Prefs.LED_SLEEP, "off");

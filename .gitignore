@@ -6,3 +6,5 @@ img/
 __pycache__/
 # your own ssh public keys for the panel
 config/ssh/
+logs/
+STYLE.md

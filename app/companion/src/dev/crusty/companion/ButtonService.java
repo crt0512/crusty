@@ -88,6 +88,8 @@ public class ButtonService extends AccessibilityService implements SharedPrefere
         boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
         boolean first = down && e.getRepeatCount() == 0;
         int idx = indexOf(code);
+        // golden mode: the side buttons are dead (no screen off, no crusty app, no home)
+        if (Golden.active() && (idx >= 0 || code == KeyEvent.KEYCODE_HOME)) return true;
         if (idx >= 0 || code == KeyEvent.KEYCODE_HOME) userActivity();
 
         // screen blanked: the first press of any button only wakes it and and nothing else, its key up gets swallowed too
